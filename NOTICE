@@ -1,0 +1,12 @@
+Bot X-Ray
+Copyright (c) 2026 Lewis Jackson. MIT licence (see LICENSE).
+
+Fonts: Archivo (public/fonts/Archivo-Variable.ttf, Copyright 2020 The Archivo Project Authors) and
+Caveat (public/fonts/Caveat-Variable.ttf, Copyright 2014 The Caveat Project Authors), both under the
+SIL Open Font License 1.1 (public/fonts/OFL-Archivo.txt, public/fonts/OFL-Caveat.txt).
+
+Bot X-Ray is an independent project. It is not affiliated with, endorsed by, or connected to Polymarket,
+Kalshi, Binance, Coinbase, Kraken, Cboe or any broker. Data comes from their public endpoints, each under
+its own terms. It reads Polymarket's public data and never places an order on Polymarket.
+
+Nothing in this software is financial advice, and nothing in it promises a profit.

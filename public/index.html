@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="uz">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bot X-Ray</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23141412'/%3E%3Cpath d='M6 22 L12 15 L17 18 L26 8' stroke='%23F4F2EE' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="css/app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        Bot X-Ray <small id="brand-tagline">ochiq ma’lumot, sizning kompyuteringiz</small>
+      </div>
+      <form class="who" id="who" autocomplete="off">
+        <input
+          id="wallet"
+          name="wallet"
+          placeholder="Polymarket hamyon yoki foydalanuvchi nomini kiriting"
+          aria-label="Polymarket hamyon yoki foydalanuvchi nomini kiriting"
+        />
+        <button class="btn" type="submit" id="btn-xray">Tekshirish</button>
+      </form>
+      <div class="chips" id="chips"></div>
+      <div class="lang-switch" id="lang-switch" role="group" aria-label="Language switcher">
+        <button type="button" class="lang-btn active" data-lang="uz">UZ</button>
+        <span class="lang-sep">|</span>
+        <button type="button" class="lang-btn" data-lang="en">EN</button>
+      </div>
+    </header>
+    <nav class="tabs" id="tabs">
+      <a href="#/wallet" data-tab="wallet" id="tab-wallet">Hamyon</a>
+      <a href="#/does" data-tab="does" id="tab-does">Nima qiladi</a>
+      <a href="#/luck" data-tab="luck" id="tab-luck">Mahorat yoki omad</a>
+      <a href="#/working" data-tab="working" id="tab-working">Hali ishlayaptimi?</a>
+      <a href="#/convert" data-tab="convert" id="tab-convert">Broker orqali savdo</a>
+      <span class="sep"></span>
+      <a href="#/winning" data-tab="winning" id="tab-winning">Hozir kim yutmoqda</a>
+      <a href="#/live" data-tab="live" id="tab-live">Jonli farq</a>
+      <a href="#/strategy" data-tab="strategy" id="tab-strategy">Strategiya (qog‘oz)</a>
+      <a href="#/claude" data-tab="claude" id="tab-claude">Claude ulash</a>
+    </nav>
+    <main id="main"></main>
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

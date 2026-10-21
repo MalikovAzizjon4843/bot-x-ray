@@ -1,0 +1,25 @@
+{
+  "name": "bot-x-ray",
+  "version": "1.0.0",
+  "description": "Reverse engineer any Polymarket trading bot from public data: what it does, skill or luck, whether it still works, who's winning now and a live gap check. Plus the one strategy that held up, on paper, ready for your own broker.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js --open",
+    "serve": "node server.js",
+    "test": "node scripts/test.js",
+    "test:live": "node --test test/live.test.js",
+    "doctor": "node scripts/doctor.js",
+    "smoke": "node scripts/smoke.js",
+    "check": "node scripts/check.js",
+    "launch": "node scripts/launch.js",
+    "stop": "node scripts/stop.js",
+    "setup": "node scripts/setup.js",
+    "xray": "node scripts/xray.js",
+    "arm": "node scripts/arm.js"
+  },
+  "license": "MIT"
+}
