@@ -202,6 +202,7 @@ function render() {
   if (tTab === "winning") return winning();
   if (tTab === "live") return liveScreen();
   if (tTab === "strategy") return strategy();
+  if (tTab === "mm") return mmScreen();
   if (tTab === "claude") return claude();
   if (!state.wallet) return welcome();
   if (state.error)
@@ -905,6 +906,270 @@ async function strategy() {
 
     later(draw, 30000);
   };
+  draw();
+}
+
+
+async function mmScreen() {
+  main.innerHTML = `<p class="kicker">${t("mm.kicker")}</p><div id="mm-root"><p class="hand">${t("strategy.loading")}</p></div>`;
+
+  const usdExact = (v) =>
+    Number.isFinite(v)
+      ? `${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : "–";
+  const signedExact = (v) =>
+    Number.isFinite(v)
+      ? `${v >= 0 ? "+" : "−"}${Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : "–";
+
+  const draw = async () => {
+    if (state.tab !== "mm") return;
+    let s;
+    try {
+      s = await api("/api/mm/status");
+    } catch (e) {
+      const root = $("#mm-root");
+      if (root) root.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+      return;
+    }
+    const c = s.config || {};
+    const opps = s.lastScan?.opportunities || [];
+    const active = s.activeQuotes || [];
+    const history = (s.tradeHistory || []).slice().reverse();
+    const now = Date.now();
+
+    const root = $("#mm-root");
+    if (!root) return;
+
+    root.innerHTML = `
+      <h1>${t("mm.h1")}</h1>
+      <p class="sub">${t("mm.sub")}</p>
+
+      <div class="row" style="margin:18px 0;align-items:center;flex-wrap:wrap;gap:10px">
+        <button class="btn ${s.running ? "blue" : "ghost"}" id="mm-toggle" style="${s.running ? "background:#059669;border-color:#059669;color:#fff;" : ""}">
+          ${s.running ? `● ${t("mm.autopilotOn")}` : `○ ${t("mm.autopilotOff")}`}
+        </button>
+        <button class="btn" id="mm-scan">${t("mm.scanNow")}</button>
+        <button class="btn ghost" id="mm-reset" style="color:#ef4444;border-color:rgba(239,68,68,0.4)">${t("mm.reset")}</button>
+        <span class="sep" style="display:inline-block;width:1px;height:24px;background:var(--line);margin:0 4px"></span>
+        <label class="toggle" style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <span class="muted">${t("mm.orderSize")}</span>
+          <input type="number" id="mm-ordersize" min="10" max="500" step="10" value="${c.orderSizeUsd || 50}" style="width:68px;padding:4px 8px;border-radius:6px;border:1px solid var(--line);background:#fffdf9"/>
+        </label>
+        <label class="toggle" style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <span class="muted">${t("mm.minSpread")}</span>
+          <input type="number" id="mm-minspread" min="0.5" max="10" step="0.5" value="${c.minSpreadCents || 1.5}" style="width:62px;padding:4px 8px;border-radius:6px;border:1px solid var(--line);background:#fffdf9"/>
+        </label>
+        <label class="toggle" style="font-size:13px">
+          <input type="checkbox" id="mm-crypto" ${c.categories?.includes("crypto") ? "checked" : ""}/> ${t("mm.crypto")}
+        </label>
+        <label class="toggle" style="font-size:13px">
+          <input type="checkbox" id="mm-sports" ${c.categories?.includes("sports") ? "checked" : ""}/> ${t("mm.sports")}
+        </label>
+      </div>
+
+      <div class="stats">
+        ${stat(usdExact(s.virtualBalance), t("mm.stat.balance"))}
+        ${stat(
+          `<span style="color:${(s.realizedPnL || 0) >= 0 ? "#059669" : "#dc2626"}">${signedExact(s.realizedPnL || 0)}</span>`,
+          t("mm.stat.pnl")
+        )}
+        ${stat(
+          s.totalTrades > 0 ? `${s.winRate || 0}% <span class="small muted">(${s.totalWins || 0}/${s.totalTrades})</span>` : "–",
+          t("mm.stat.winRate")
+        )}
+        ${stat(
+          `${s.totalSplits || 0} / ${s.totalMerges || 0}`,
+          t("mm.stat.cycles")
+        )}
+        ${stat(
+          `+${usdExact(s.rebatesEarned || 0)}`,
+          t("mm.stat.rebates")
+        )}
+        ${stat(
+          s.leggingScratches || 0,
+          t("mm.stat.scratches")
+        )}
+      </div>
+
+      <h2>${t("mm.h2.active")} ${active.length ? `<span class="pill blue" style="background:#2563eb;color:#fff">${active.length} open</span>` : ""}</h2>
+      ${
+        active.length
+          ? `<div class="tablewrap"><table>
+              <tr>
+                <th class="l">${t("mm.th.market")}</th>
+                <th>${t("mm.th.shares")}</th>
+                <th>${t("mm.th.cost")}</th>
+                <th>${t("mm.th.yesLeg")}</th>
+                <th>${t("mm.th.noLeg")}</th>
+                <th>${t("mm.th.status")}</th>
+                <th>${t("mm.th.protection")}</th>
+              </tr>
+              ${active
+                .map((q) => {
+                  const filledAt = q.yesFilled ? q.yesFilledAt : q.noFilledAt;
+                  const elapsed = now - (filledAt || q.placedAt);
+                  const remSec = Math.max(0, Math.round(((q.maxHoldMs || 180000) - elapsed) / 1000));
+                  let statusHtml = "";
+                  if (q.yesFilled && !q.noFilled) {
+                    statusHtml = `<span style="color:#059669;font-weight:700">YES Filled ✅</span> · <span style="color:#d97706">Waiting NO ⏳</span>`;
+                  } else if (!q.yesFilled && q.noFilled) {
+                    statusHtml = `<span style="color:#d97706">Waiting YES ⏳</span> · <span style="color:#059669;font-weight:700">NO Filled ✅</span>`;
+                  } else {
+                    statusHtml = `<span class="muted">Both Legs Quoting ⏳</span>`;
+                  }
+                  return `<tr>
+                    <td class="l"><b>${esc(q.question)}</b></td>
+                    <td>${q.shares}</td>
+                    <td>${usdExact(q.cost)}</td>
+                    <td>${cents(q.yesLimitSell)}</td>
+                    <td>${cents(q.noLimitSell)}</td>
+                    <td>${statusHtml}</td>
+                    <td><span class="pill" style="font-size:11px;padding:2px 8px">${t("mm.secLeft", { s: remSec })}</span></td>
+                  </tr>`;
+                })
+                .join("")}
+            </table></div>`
+          : `<p class="small muted">${t("mm.noActive")}</p>`
+      }
+
+      <h2>${t("mm.h2.opportunities")} ${s.lastScan ? `<span class="small">${new Date(s.lastScan.at).toLocaleTimeString("en-GB")} · ${s.lastScan.marketsScanned} markets scanned</span>` : ""}</h2>
+      ${
+        opps.length
+          ? `<div class="tablewrap"><table>
+              <tr>
+                <th class="l">${t("mm.th.market")}</th>
+                <th>${t("mm.th.category")}</th>
+                <th>${t("mm.th.yesAsk")}</th>
+                <th>${t("mm.th.noAsk")}</th>
+                <th>${t("mm.th.pairSum")}</th>
+                <th>${t("mm.th.spread")}</th>
+                <th>${t("mm.th.liquidity")}</th>
+                <th class="l">${t("mm.th.action")}</th>
+              </tr>
+              ${opps
+                .map((o) => {
+                  let actionHtml = `<span class="pill" style="opacity:0.6">${t("mm.action.waiting")}</span>`;
+                  if (o.action === "Instant Merge") {
+                    actionHtml = `<span class="pill" style="background:#059669;color:#fff;font-weight:700;border:none">${t("mm.action.merge")}</span>`;
+                  } else if (o.action === "Quoting Split") {
+                    actionHtml = `<span class="pill" style="background:#2563eb;color:#fff;font-weight:700;border:none">${t("mm.action.split")}</span>`;
+                  }
+                  const catBadge =
+                    o.category === "crypto"
+                      ? `<span class="pill" style="font-size:11px;padding:2px 8px;background:#fef3c7;color:#92400e;border:none;font-weight:700">CRYPTO</span>`
+                      : `<span class="pill" style="font-size:11px;padding:2px 8px;background:#e0e7ff;color:#3730a3;border:none;font-weight:700">SPORTS</span>`;
+                  return `<tr>
+                    <td class="l">${esc(o.question)}</td>
+                    <td>${catBadge}</td>
+                    <td>${cents(o.yesAsk)}</td>
+                    <td>${cents(o.noAsk)}</td>
+                    <td><b>${o.pairSum.toFixed(3)}</b></td>
+                    <td>${o.spreadCents.toFixed(1)}¢</td>
+                    <td>${usd(o.liquidity)}</td>
+                    <td class="l">${actionHtml}</td>
+                  </tr>`;
+                })
+                .join("")}
+            </table></div>`
+          : `<p class="small muted">${t("mm.noOpps")}</p>`
+      }
+
+      <h2>${t("mm.h2.history")} ${history.length ? `<span class="small">(${history.length} cycles)</span>` : ""}</h2>
+      ${
+        history.length
+          ? `<div class="tablewrap"><table>
+              <tr>
+                <th class="l">${t("mm.th.time")}</th>
+                <th class="l">${t("mm.th.market")}</th>
+                <th>${t("mm.th.strategy")}</th>
+                <th>${t("mm.th.entry")}</th>
+                <th>${t("mm.th.exit")}</th>
+                <th>${t("mm.th.rebate")}</th>
+                <th>${t("mm.th.profit")}</th>
+              </tr>
+              ${history
+                .slice(0, 50)
+                .map((h) => {
+                  const profitColor = (h.netProfit || 0) >= 0 ? "#059669" : "#dc2626";
+                  return `<tr>
+                    <td class="l small muted">${new Date(h.timestamp).toLocaleTimeString("en-GB")}</td>
+                    <td class="l"><b>${esc(h.market)}</b></td>
+                    <td><span class="pill" style="font-size:11px;padding:2px 8px">${esc(h.strategy)}</span></td>
+                    <td>${usdExact(h.entryCost)}</td>
+                    <td>${usdExact(h.exitPayout)}</td>
+                    <td style="color:#059669">+${usdExact(h.rebate)}</td>
+                    <td><b style="color:${profitColor}">${signedExact(h.netProfit)}</b></td>
+                  </tr>`;
+                })
+                .join("")}
+            </table></div>`
+          : `<p class="small muted">${t("mm.noHistory")}</p>`
+      }
+    `;
+
+    // Event handlers
+    const toggleBtn = $("#mm-toggle");
+    if (toggleBtn) {
+      toggleBtn.onclick = async () => {
+        toggleBtn.disabled = true;
+        await api("/api/mm/toggle", {}).catch((err) => alert(err.message));
+        draw();
+      };
+    }
+
+    const scanBtn = $("#mm-scan");
+    if (scanBtn) {
+      scanBtn.onclick = async () => {
+        scanBtn.disabled = true;
+        scanBtn.textContent = t("mm.scanning");
+        await api("/api/mm/scan-once", {}).catch((err) => alert(err.message));
+        draw();
+      };
+    }
+
+    const resetBtn = $("#mm-reset");
+    if (resetBtn) {
+      resetBtn.onclick = async () => {
+        if (!confirm(lang() === "uz" ? "Haqiqatan ham demo balansni $1,000 ga qaytarmoqchimisiz?" : "Reset virtual paper balance to $1,000 USDC?")) return;
+        resetBtn.disabled = true;
+        await api("/api/mm/reset", {}).catch((err) => alert(err.message));
+        draw();
+      };
+    }
+
+    const updateConfig = async () => {
+      const orderSize = parseFloat($("#mm-ordersize")?.value) || 50;
+      const minSpread = parseFloat($("#mm-minspread")?.value) || 1.5;
+      const cryptoChecked = $("#mm-crypto")?.checked;
+      const sportsChecked = $("#mm-sports")?.checked;
+      const categories = [];
+      if (cryptoChecked) categories.push("crypto");
+      if (sportsChecked) categories.push("sports");
+      if (!categories.length) categories.push("crypto");
+      await api("/api/mm/config", {
+        orderSizeUsd: orderSize,
+        minSpreadCents: minSpread,
+        categories,
+      }).catch((err) => alert(err.message));
+    };
+
+    const orderSizeInput = $("#mm-ordersize");
+    if (orderSizeInput) orderSizeInput.onchange = updateConfig;
+
+    const minSpreadInput = $("#mm-minspread");
+    if (minSpreadInput) minSpreadInput.onchange = updateConfig;
+
+    const cryptoCb = $("#mm-crypto");
+    if (cryptoCb) cryptoCb.onchange = async () => { await updateConfig(); draw(); };
+
+    const sportsCb = $("#mm-sports");
+    if (sportsCb) sportsCb.onchange = async () => { await updateConfig(); draw(); };
+
+    // Poll every 10 seconds if user stays on MM tab
+    later(draw, 10000);
+  };
+
   draw();
 }
 

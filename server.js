@@ -17,6 +17,7 @@ import * as leaderboard from "./lib/leaderboard.js";
 import * as live from "./lib/live.js";
 import * as engine from "./lib/strategy/engine.js";
 import * as brokers from "./lib/brokers/index.js";
+import * as mm from "./lib/market-maker.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, "public");
@@ -245,6 +246,23 @@ async function handle(req, res) {
     if (p === "/api/broker/stop" && post)
       return send(res, 200, brokers.engageStop());
 
+    // ── Market-Maker paper-trading endpoints ──
+    if (p === "/api/mm/status") return send(res, 200, mm.state());
+    if (p === "/api/mm/toggle" && post) return send(res, 200, mm.toggle());
+    if (p === "/api/mm/config" && post) {
+      const b = await readBody(req);
+      const patch = {};
+      if (typeof b.orderSizeUsd === "number" && b.orderSizeUsd > 0 && b.orderSizeUsd <= 500) patch.orderSizeUsd = b.orderSizeUsd;
+      if (typeof b.minSpreadCents === "number" && b.minSpreadCents >= 0) patch.minSpreadCents = b.minSpreadCents;
+      if (typeof b.maxOpenMarkets === "number" && b.maxOpenMarkets >= 1) patch.maxOpenMarkets = Math.min(b.maxOpenMarkets, 20);
+      if (Array.isArray(b.categories)) patch.categories = b.categories.filter(c => ["crypto","sports"].includes(c));
+      if (typeof b.maxHoldSeconds === "number") patch.maxHoldSeconds = Math.max(30, Math.min(b.maxHoldSeconds, 600));
+      if (typeof b.stopLossCents === "number") patch.stopLossCents = Math.max(1, Math.min(b.stopLossCents, 20));
+      return send(res, 200, mm.setConfig(patch));
+    }
+    if (p === "/api/mm/reset" && post) return send(res, 200, mm.reset());
+    if (p === "/api/mm/scan-once" && post) return send(res, 200, await mm.scanOnce());
+
     if (p.startsWith("/api/strategy-doc/")) {
       const docName = path.basename(p.replace("/api/strategy-doc/", "")).replace(/\.md$/, "");
       const lang = q("lang") === "uz" ? "uz" : "en";
@@ -307,6 +325,10 @@ if (isMain) {
     engine.startLoop((m) =>
       console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`),
     );
+  // Start Market-Maker background loop (it only scans when toggled ON by the user)
+  mm.startLoop((m) =>
+    console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`),
+  );
   console.log(
     `\n  Bot X-Ray ${VERSION} is running\n\n  Open:  ${url}\n  Stop:  Ctrl+C\n  Data:  ${DATA}\n`,
   );
