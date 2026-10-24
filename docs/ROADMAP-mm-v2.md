@@ -24,13 +24,15 @@
 - Heartbeat: matnli `PING` har 10s → `PONG`.
 - `book`: `bids` o'suvchi, `asks` kamayuvchi tartibda → ENG YAXSHI NARX OXIRIDA. `hash`, `tick_size`, `last_trade_price` bor.
 - `price_change`: `price_changes[]` → `{asset_id, price, size, side, hash, best_bid, best_ask}`. `size` = darajaning ABSOLYUT yangi hajmi. Bitta xabarda ikkala token kelishi mumkin.
-- `last_trade_price.side` = TAKER tomoni. `fee_rate_bps` doim "0" — ishlatma.
+- `last_trade_price.side` = TAKER tomoni (~95%; ~5% istisno — cross-token matching, pastga qarang). `fee_rate_bps` doim "0" — ishlatma.
+- Kitoblar MIRRORED (2026-10-24 tekshirildi, 2486/2486 daraja): YES ask P hajmi = NO bid 1−P hajmi, YES bid P = NO ask 1−P. Misol (btc 15m): Up ask 0.97 = 237.43 ↔ Down bid 0.03 = 237.43; Up bid 0.96 = 216.58 ↔ Down ask 0.04 = 216.58. Har bir o'zgarish ikkala kitobda ko'rinadi.
 - Dinamik subscribe'da `best_bid_ask` kelmaydi → BBO ni o'zimiz hisoblaymiz.
 - `tick_size_change`: narx 0.96 dan yuqori / 0.04 dan past → tick 0.01 ↔ 0.001.
 - Ko'p darajali sweep ba'zan faqat keyingi snapshot'da ko'rinadi → `price_change` dagi `best_bid/best_ask` dan yaxshiroq lokal darajalarni o'chir (BBO self-heal).
 - `book` snapshot'larning 66% trade'dan keyin ≤300ms keladi → snapshot'ni oldingi lokal kitob bilan diff qilib `level` event chiqar.
 - Level kamayishi odatda trade xabaridan OLDIN keladi (929/932). Farq p50 12ms, p95 32ms; 98.5% ±300ms ichida.
-- Kitobdagi kamayishlarning ~93% i cancel, ~7% trade.
+- Kitobdagi kamayishlar: trade ulushi hodisa soni bo'yicha ~0.5%, hajm bo'yicha ~0.1% (2026-10-24, 10 min, 1.2M kamayish). Qolgani cancel/requote.
+- "Jim yo'qolish": exchange ba'zan qo'shilgan hajmning yo'qolishini `price_change` bilan yubormaydi (2–8s yashaydi, ikkala complement kitobda). Sababi aniqlanmagan (GTD expiry bo'lishi mumkin). Shadow resync tuzatadi.
 - Bitta WS ulanishda ~60 token (~3.9k msg/s) uziladi → FeedPool (default 8 ulanish).
 - Raw frame ichida newline bo'lishi mumkin → yozishdan oldin olib tashla.
 - Raw log: 60 token ≈ 0.5 GB/soat (gzip).
@@ -75,7 +77,7 @@ Fayllar: `lib/clob-ws.js` (ClobFeed, FeedPool, RawLog), `lib/market-rotator.js`,
 - Single-instance lock: `data/.lock` (pid+port), tirik jarayon bo'lsa `exit(1)`, o'lik pid lock'i avtomatik olinadi.
 - Env: `BOTXRAY_NO_FEED`, `BOTXRAY_FEED_COINS`, `BOTXRAY_RAWLOG_MAX_GB`.
 - `.gitignore`: `data/ws-raw/`, `data/*.json`, `data/*.jsonl`, `data/.lock`, `.env`, `node_modules/`.
-- Qabul (2026-10-24 da o'zgartirildi): drift ≤ 1 per token-soat; har drift ≤ 60s ichida avtomatik tuzaladi; top-of-book REST bilan ≥ 99% mos (hash bo'yicha); 30 min run'da reconnect bo'ronlari yo'q; faktlardan farq bo'lsa hisobotda.
+- Qabul (2026-10-24 da o'zgartirildi): har drift ≤ 60s ichida avtomatik tuzaladi (max drift yoshi); top-of-book REST bilan ≥ 99% mos (hash bo'yicha); 30 min lokal server run'da reconnect bo'ronlari yo'q; faktlardan farq bo'lsa hisobotda. Xom drift/token-soat — faqat metrika (o'lchangan: ~1.3).
 
 ## Etap 2 — Fill modeli (`lib/fill-model.js`, `test/fill-model.test.js`)
 - `QueueOrder` (SELL va BUY simmetrik). Navbat `activeAt = placedAt + latencyMs` (default 400) paytidagi level hajmidan olinadi; yangi yaxshiroq narx darajasi → `queueAhead = 0`. Latency oynasidagi eventlar e'tiborsiz.
@@ -83,6 +85,9 @@ Fayllar: `lib/clob-ws.js` (ClobFeed, FeedPool, RawLog), `lib/market-rotator.js`,
 - Fill manbalari: `trade_at_level`, `trade_through`, `cross`.
 - DOUBLE-COUNT QOIDASI: level kamayishi (barcha source'lar) darhol qo'llanmaydi → pending buffer `{qty, ts, source}`. Trade bilan ±300ms ichida IKKI TOMONGA match. Trade hajmi — authority. Match bo'lmagan qism oyna tugaganda = cancel → `cancelMode`. `queueAhead ≤ levelSize` clamp faqat reconciliation'dan keyin.
 - `cancelMode`: `pessimistic` (default, queueAhead o'zgarmaydi) | `proportional`.
+- `source:"resync"` kamayishi (shadow resync / jim yo'qolish) — HECH QACHON fill emas: buffer'ga tushadi, trade bilan match bo'lmaydi → cancel → `cancelMode`.
+- Mirrored kitob → `queueAhead` faqat o'z token kitobidan (complement bid'lar unda allaqachon bor, qo'shilmaydi).
+- Ochiq savol: bizning YES ask P darajamizni iste'mol qilgan trade NO token'da 1−P narxda kelishi mumkin (side istisnolari). Trade matching'da complement token trade'larini ham hisobga olish kerakmi — Etap 2 boshida o'lchab hal qilinadi.
 - `crossFill` default TRUE. Sabab: cross = bestBid ≥ bizning ask = narx bizdan o'tgan = har doim adverse fill. `false` zararli fill'larni tashlab PnL ni optimistik qiladi.
 - Yordamchilar: `takerFee(shares, p, fd)`, `roundToTick` (SELL yuqoriga), `sharesForUsd` (min 5 share), `sweep` (kitob bo'ylab VWAP), `MarkoutTracker` (5s, 30s; SELL markout = fillPrice − midLater).
 - Majburiy testlar:
