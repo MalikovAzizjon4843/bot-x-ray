@@ -65,14 +65,17 @@ Fayllar: `lib/clob-ws.js` (ClobFeed, FeedPool, RawLog), `lib/market-rotator.js`,
 - L2 kitob har token: `bids/asks Map<price,size>`, BBO, `lastUpdateTs`, `tickSize`.
 - Event'lar: `level(assetId, side, price, newSize, prevSize, ts, source)` (`price_change|snapshot|bbo_heal|resync`), `trade`, `tick`, `stale`, `fresh`, `reconnected`.
 - PING 10s; 25s PONG yo'q → reconnect, backoff 1s→30s + jitter, qayta subscribe.
-- Stale FAQAT: (re)subscribe'dan keyin snapshot yo'q YOKI ulanish unhealthy. Jimlik stale EMAS. 60s jim token → bitta REST `/book` spot-check, mos kelmasa resubscribe.
+- Stale FAQAT: (re)subscribe'dan keyin snapshot yo'q YOKI ulanish unhealthy. Jimlik stale EMAS.
+- Shadow resync (REST o'rniga, qaror 2026-10-24): FeedPool'da alohida "shadow" ulanish; round-robin har token ≤50s da (ochiq orderli token — 15s) subscribe → snapshot → `hash` bo'yicha asosiy kitob bilan solishtirish → unsubscribe. Asosiy ulanish uzilmaydi. Diff → kitob = snapshot + keyingi o'zgarishlar, level event `source:"resync"`. Sabab: exchange ba'zan qo'shilgan orderning yo'qolishini `price_change` bilan yubormaydi (ikkala complement tokenda ko'rinadi, 2–8s yashaydi).
+- `hash` — butun kitob holatining hash'i: shadow snapshot hash'i asosiy oqim tarixida topiladi (66/66) → aniq sinxron nuqta.
+- REST `/book` — faqat metrika (har 5 min bitta token, hash bo'yicha).
 - Rotator: har coin (btc, eth, sol, xrp, doge) × 5m/15m → joriy + keyingi oyna. Keyingisi start'dan ≥60s oldin subscribe, tugagani 60s grace'dan keyin unsubscribe.
 - RawLog: `data/ws-raw/YYYY-MM-DD-HH.jsonl.gz`, har 5s va exit'da to'liq gzip member, `BOTXRAY_RAWLOG_MAX_GB` (default 2) rolling limit.
-- Server: `/api/mm/feed-health` (ulanishlar, msg/s, stale tokenlar, reconnect soni), `/api/shutdown` + `stop.js` tuzatish.
+- Server: `/api/mm/feed-health` (ulanishlar, msg/s, stale tokenlar, reconnect soni, drift: `driftDetected`, `driftPerTokenHour`, o'rtacha/max drift yoshi), `/api/shutdown` + `stop.js` tuzatish.
 - Single-instance lock: `data/.lock` (pid+port), tirik jarayon bo'lsa `exit(1)`, o'lik pid lock'i avtomatik olinadi.
 - Env: `BOTXRAY_NO_FEED`, `BOTXRAY_FEED_COINS`, `BOTXRAY_RAWLOG_MAX_GB`.
 - `.gitignore`: `data/ws-raw/`, `data/*.json`, `data/*.jsonl`, `data/.lock`, `.env`, `node_modules/`.
-- Qabul: probe — lokal top-of-book REST `/book` bilan 100% mos, `bboMismatch = 0`; 30 min run'da reconnect bo'ronlari yo'q; yuqoridagi faktlardan farq bo'lsa hisobotda.
+- Qabul (2026-10-24 da o'zgartirildi): drift ≤ 1 per token-soat; har drift ≤ 60s ichida avtomatik tuzaladi; top-of-book REST bilan ≥ 99% mos (hash bo'yicha); 30 min run'da reconnect bo'ronlari yo'q; faktlardan farq bo'lsa hisobotda.
 
 ## Etap 2 — Fill modeli (`lib/fill-model.js`, `test/fill-model.test.js`)
 - `QueueOrder` (SELL va BUY simmetrik). Navbat `activeAt = placedAt + latencyMs` (default 400) paytidagi level hajmidan olinadi; yangi yaxshiroq narx darajasi → `queueAhead = 0`. Latency oynasidagi eventlar e'tiborsiz.

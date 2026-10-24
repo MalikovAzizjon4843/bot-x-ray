@@ -18,6 +18,8 @@ import * as live from "./lib/live.js";
 import * as engine from "./lib/strategy/engine.js";
 import * as brokers from "./lib/brokers/index.js";
 import * as mm from "./lib/market-maker.js";
+import * as mmFeed from "./lib/mm-feed.js";
+import * as lock from "./lib/instance-lock.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, "public");
@@ -37,6 +39,9 @@ const MIME = {
   ".ico": "image/x-icon",
   ".txt": "text/plain; charset=utf-8",
 };
+
+// Set when this file runs as the server; tests that import start() can't shut the process down.
+let shutdownHook = null;
 
 const httpError = (status, message) =>
   Object.assign(new Error(message), { status });
@@ -246,6 +251,15 @@ async function handle(req, res) {
     if (p === "/api/broker/stop" && post)
       return send(res, 200, brokers.engageStop());
 
+    if (p === "/api/shutdown" && post) {
+      if (!shutdownHook) throw httpError(501, "Shutdown is only available on the running server");
+      send(res, 200, { ok: true, stopping: true, pid: process.pid });
+      setImmediate(shutdownHook);
+      return;
+    }
+
+    if (p === "/api/mm/feed-health") return send(res, 200, mmFeed.health());
+
     // ── Market-Maker paper-trading endpoints ──
     if (p === "/api/mm/status") return send(res, 200, mm.state());
     if (p === "/api/mm/toggle" && post) return send(res, 200, mm.toggle());
@@ -319,22 +333,44 @@ const isMain =
 const relaunched = isMain ? relaunchForProxy() : null;
 if (relaunched) process.exit(await relaunched);
 if (isMain) {
-  const { port } = await start();
+  // One server per data folder, or two copies write the same files.
+  const got = lock.acquire(DATA, { root: ROOT });
+  if (!got.ok) {
+    console.error(`
+  Bot X-Ray is already running from this data folder (pid ${got.holder?.pid}, port ${got.holder?.port ?? "?"}).
+  Stop it with: node scripts/stop.js
+`);
+    process.exit(1);
+  }
+  process.on("exit", () => lock.release(DATA));
+  const { server, port } = await start();
+  lock.update(DATA, { port });
+  const stamp = (m) => console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`);
+  let stopping = false;
+  shutdownHook = async () => {
+    if (stopping) return;
+    stopping = true;
+    stamp("shutting down");
+    setTimeout(() => process.exit(0), 5000).unref();
+    server.close();
+    server.closeAllConnections?.();
+    await mmFeed.stop().catch(() => {});
+    process.exit(0);
+  };
   const url = `http://localhost:${port}`;
   if (process.env.BOTXRAY_NO_STRATEGY !== "1")
     engine.startLoop((m) =>
       console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`),
     );
-  // Start Market-Maker background loop (it only scans when toggled ON by the user)
-  mm.startLoop((m) =>
-    console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`),
-  );
+  // v1 Market-Maker is retired (its fill model was wrong); data/mm-paper.json stays as an archive.
+  // BOTXRAY_MM_V1=1 still runs the old loop.
+  if (process.env.BOTXRAY_MM_V1 === "1") mm.startLoop(stamp);
+  mmFeed.start({ log: stamp });
   console.log(
     `\n  Bot X-Ray ${VERSION} is running\n\n  Open:  ${url}\n  Stop:  Ctrl+C\n  Data:  ${DATA}\n`,
   );
   if (proxyNote()) console.log(`  ${proxyNote()}\n`);
   if (process.argv.includes("--open")) openBrowser(url);
-  const bye = () => process.exit(0);
-  process.on("SIGINT", bye);
-  process.on("SIGTERM", bye);
+  process.on("SIGINT", shutdownHook);
+  process.on("SIGTERM", shutdownHook);
 }
