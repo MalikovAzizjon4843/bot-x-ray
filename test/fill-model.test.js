@@ -197,6 +197,41 @@ test("M7. one match as YES BUY 10 @ P and NO SELL 10 @ 1−P, 20 ms apart → fi
   assert.equal(filled(s.fills), 20);
 });
 
+test("M8. one txHash, two sizes (10 and 5) → fill 15: one transaction can carry several maker matches", () => {
+  const s = setup({ queue: 0 });
+  s.at(500);
+  s.trade(Y, 0.52, 10, "BUY", 0, "0xtx");
+  s.at(510);
+  s.trade(N, 0.48, 5, "SELL", 0, "0xtx");
+  assert.equal(filled(s.fills), 15);
+  assert.equal(s.fm.stats.duplicates, 0);
+});
+
+test("M9. reported side disagrees with the book → the level that went down decides, and we fill", () => {
+  // our SELL YES ask 0.52 sits behind 5; the level (and its mirror NO bid 0.48) drops by 5, then the trade
+  // arrives on NO marked BUY — taken literally that would be a YES SELL, which can't touch our ask
+  const s = setup({ queue: 5 });
+  s.at(500);
+  s.level("ask", 0.52, 0);
+  s.at(520);
+  s.trade(N, 0.48, 10, "BUY");
+  assert.equal(filled(s.fills), 5, "5 ahead of us, then 5 for us");
+  assert.equal(s.fm.stats.sideOverridden, 1);
+  // the same on YES itself: marked SELL at 0.52 while the ask went down
+  const y = setup({ queue: 5 });
+  y.at(500);
+  y.level("ask", 0.52, 0);
+  y.at(520);
+  y.trade(Y, 0.52, 10, "SELL");
+  assert.equal(filled(y.fills), 5);
+  // nothing in the buffer → the reported side stands (a YES SELL doesn't touch our ask)
+  const z = setup({ queue: 5 });
+  z.at(500);
+  z.trade(Y, 0.52, 10, "SELL");
+  assert.equal(filled(z.fills), 0);
+  assert.equal(z.fm.stats.sideOverridden, 0);
+});
+
 test("look-alike YES/NO trades with different transaction hashes are two matches", () => {
   const s = setup({ queue: 0 });
   s.at(500);
@@ -252,7 +287,7 @@ test("a resync decrease is a cancel, never a fill, even with a trade nearby", ()
   s.trade(Y, 0.52, 0.0001, "BUY"); // a trade at our level can't turn a resync decrease into a fill
   s.at(1000);
   assert.equal(filled(s.fills), 0);
-  assert.equal(s.fm.stats.cancelsQty, 60);
+  assert.equal(s.fm.stats.cancelsQty, 120, "60 on YES and its mirror on NO");
   assert.equal(s.order.queueAhead, 40);
 });
 
