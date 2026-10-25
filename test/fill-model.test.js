@@ -315,6 +315,32 @@ test("a resync decrease is a cancel, never a fill, even with a trade nearby", ()
   assert.equal(s.order.queueAhead, 40);
 });
 
+test("metrics: buffer size, event time, and the buffer empties once the window has passed", () => {
+  const s = setup();
+  s.at(500);
+  s.level("ask", 0.52, 90);
+  const m = s.fm.metrics();
+  assert.equal(m.buffer.pending, 2, "the decrease and its mirror");
+  assert.ok(m.eventUs.p99 >= 0);
+  assert.ok(m.events > 0);
+  s.at(900);
+  assert.equal(s.fm.metrics().buffer.pending, 0);
+  assert.equal(s.fm.metrics().buffer.pendingLevels, 0);
+});
+
+test("fills carry sideOverridden when the effective side decided them", () => {
+  const s = setup({ queue: 5 });
+  s.at(500);
+  s.level("ask", 0.52, 0);
+  s.at(520);
+  s.trade(N, 0.48, 10, "BUY");
+  assert.equal(s.fills.at(-1).sideOverridden, true);
+  const t = setup({ queue: 0 });
+  t.at(500);
+  t.trade(Y, 0.52, 10, "BUY");
+  assert.equal(t.fills.at(-1).sideOverridden, false);
+});
+
 test("helpers: roundToTick, sharesForUsd, sweep, markouts", () => {
   assert.equal(roundToTick(0.5049, 0.01, "SELL"), 0.51);
   assert.equal(roundToTick(0.5049, 0.01, "BUY"), 0.5);
