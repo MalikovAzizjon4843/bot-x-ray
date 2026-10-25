@@ -6,3 +6,9 @@ video/
 dist/
 .env
 .claude/
+
+# mm-v2 runtime data (never commit)
+data/ws-raw/
+data/*.json
+data/*.jsonl
+data/.lock

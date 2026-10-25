@@ -18,6 +18,16 @@ import * as live from "./lib/live.js";
 import * as engine from "./lib/strategy/engine.js";
 import * as brokers from "./lib/brokers/index.js";
 import * as mm from "./lib/market-maker.js";
+import * as mmFeed from "./lib/mm-feed.js";
+import * as lock from "./lib/instance-lock.js";
+import { MarketMakerV2 } from "./lib/mm-v2.js";
+import { Variants } from "./lib/mm-variants.js";
+import { endedWinner } from "./lib/polymarket.js";
+
+// Market-Maker engine: v2 (default) runs on the live feed; v1 is retired and only runs on request.
+const MM_ENGINE = process.env.BOTXRAY_MM_ENGINE === "v1" ? "v1" : "v2";
+let mm2 = null; // the v2 engine, once the feed is up
+let variants = null; // several v2 engines side by side (data/variants.json)
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, "public");
@@ -37,6 +47,9 @@ const MIME = {
   ".ico": "image/x-icon",
   ".txt": "text/plain; charset=utf-8",
 };
+
+// Set when this file runs as the server; tests that import start() can't shut the process down.
+let shutdownHook = null;
 
 const httpError = (status, message) =>
   Object.assign(new Error(message), { status });
@@ -246,8 +259,61 @@ async function handle(req, res) {
     if (p === "/api/broker/stop" && post)
       return send(res, 200, brokers.engageStop());
 
-    // ── Market-Maker paper-trading endpoints ──
-    if (p === "/api/mm/status") return send(res, 200, mm.state());
+    if (p === "/api/shutdown" && post) {
+      if (!shutdownHook) throw httpError(501, "Shutdown is only available on the running server");
+      send(res, 200, { ok: true, stopping: true, pid: process.pid });
+      setImmediate(shutdownHook);
+      return;
+    }
+
+    if (p === "/api/mm/feed-health") return send(res, 200, mmFeed.health());
+
+    // ── Market-Maker v2 variants (paper) ──
+    if (p.startsWith("/api/mm/variants")) {
+      if (!variants) throw httpError(503, "Variants need the v2 engine and the feed");
+      if (p === "/api/mm/variants") return send(res, 200, { ...variants.status(), feed: mmFeed.health() });
+      if (p === "/api/mm/variants/start" && post) return send(res, 200, variants.startAll());
+      if (p === "/api/mm/variants/stop" && post) return send(res, 200, variants.stopAll());
+      if (p === "/api/mm/variants/reset" && post) {
+        const b = await readBody(req);
+        if (b.confirm !== "RESET") throw httpError(400, 'Send {"confirm":"RESET"} to reset every variant');
+        return send(res, 200, variants.resetAll());
+      }
+      throw httpError(404, `No such endpoint: ${p}`);
+    }
+
+    // ── Market-Maker v2 (paper) ──
+    if (p.startsWith("/api/mm/v2/")) {
+      if (!mm2) throw httpError(503, MM_ENGINE === "v1" ? "This server runs the v1 engine (BOTXRAY_MM_ENGINE=v1)" : "The feed is off (BOTXRAY_NO_FEED=1 or no WebSocket), so v2 can't run");
+      if (p === "/api/mm/v2/status") return send(res, 200, { ...mm2.status(), stats: mm2.stats(), equity: mm2.s.equity.slice(-500) });
+      if (p === "/api/mm/v2/cycles") return send(res, 200, mm2.readCycles(Math.min(Number(q("limit")) || 100, 1000)).reverse());
+      if (p === "/api/mm/v2/start" && post) return send(res, 200, mm2.start());
+      if (p === "/api/mm/v2/stop" && post) return send(res, 200, mm2.stop());
+      if (p === "/api/mm/v2/reset" && post) {
+        const b = await readBody(req);
+        if (b.confirm !== "RESET") throw httpError(400, 'Send {"confirm":"RESET"} to reset v2');
+        return send(res, 200, mm2.reset());
+      }
+      if (p === "/api/mm/v2/config" && post) {
+        const b = await readBody(req);
+        const cur = mm2.config;
+        const patch = {};
+        for (const [k, v] of Object.entries(b)) {
+          if (!(k in cur)) continue;
+          if (k === "strategies" && v && typeof v === "object") patch.strategies = { A: !!v.A, B: !!v.B };
+          else if (typeof v === typeof cur[k] && (typeof v !== "number" || Number.isFinite(v))) patch[k] = v;
+        }
+        try {
+          return send(res, 200, mm2.setConfig(patch));
+        } catch (e) {
+          throw httpError(e.status || 400, e.message);
+        }
+      }
+      throw httpError(404, `No such endpoint: ${p}`);
+    }
+
+    // ── Market-Maker v1 (retired: results invalid) ──
+    if (p === "/api/mm/status") return send(res, 200, { ...mm.state(), engine: "v1", invalid: true, activeEngine: MM_ENGINE });
     if (p === "/api/mm/toggle" && post) return send(res, 200, mm.toggle());
     if (p === "/api/mm/config" && post) {
       const b = await readBody(req);
@@ -319,22 +385,58 @@ const isMain =
 const relaunched = isMain ? relaunchForProxy() : null;
 if (relaunched) process.exit(await relaunched);
 if (isMain) {
-  const { port } = await start();
+  // One server per data folder, or two copies write the same files.
+  const got = lock.acquire(DATA, { root: ROOT });
+  if (!got.ok) {
+    console.error(`
+  Bot X-Ray is already running from this data folder (pid ${got.holder?.pid}, port ${got.holder?.port ?? "?"}).
+  Stop it with: node scripts/stop.js
+`);
+    process.exit(1);
+  }
+  process.on("exit", () => lock.release(DATA));
+  const { server, port } = await start();
+  lock.update(DATA, { port });
+  const stamp = (m) => console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`);
+  let stopping = false;
+  shutdownHook = async () => {
+    if (stopping) return;
+    stopping = true;
+    stamp("shutting down");
+    setTimeout(() => process.exit(0), 5000).unref();
+    server.close();
+    server.closeAllConnections?.();
+    try {
+      mm2?.suspend();
+      variants?.suspendAll();
+    } catch (e) {
+      stamp(`mm-v2: couldn't save on shutdown (${e.message})`);
+    }
+    await mmFeed.stop().catch(() => {});
+    process.exit(0);
+  };
   const url = `http://localhost:${port}`;
   if (process.env.BOTXRAY_NO_STRATEGY !== "1")
     engine.startLoop((m) =>
       console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`),
     );
-  // Start Market-Maker background loop (it only scans when toggled ON by the user)
-  mm.startLoop((m) =>
-    console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`),
-  );
+  // v1 Market-Maker is retired (its fill model was wrong); data/mm-paper.json stays as an archive.
+  // BOTXRAY_MM_ENGINE=v1 still runs the old loop instead of v2.
+  if (MM_ENGINE === "v1") mm.startLoop(stamp);
+  const feed = mmFeed.start({ log: stamp });
+  if (feed && MM_ENGINE === "v2") {
+    mm2 = new MarketMakerV2({ pool: feed.pool, markets: () => feed.rotator.markets(), dataDir: DATA, log: stamp, resolve: (slug) => endedWinner(slug) });
+    mmFeed.setEngineMetrics(() => mm2.fm?.metrics() || null);
+    // it was running when the server stopped: carry on
+    if (mm2.s.running) mm2.start();
+    variants = new Variants({ pool: feed.pool, markets: () => feed.rotator.markets(), dataDir: DATA, log: stamp, resolve: (slug) => endedWinner(slug) });
+    variants.resume();
+  }
   console.log(
     `\n  Bot X-Ray ${VERSION} is running\n\n  Open:  ${url}\n  Stop:  Ctrl+C\n  Data:  ${DATA}\n`,
   );
   if (proxyNote()) console.log(`  ${proxyNote()}\n`);
   if (process.argv.includes("--open")) openBrowser(url);
-  const bye = () => process.exit(0);
-  process.on("SIGINT", bye);
-  process.on("SIGTERM", bye);
+  process.on("SIGINT", shutdownHook);
+  process.on("SIGTERM", shutdownHook);
 }

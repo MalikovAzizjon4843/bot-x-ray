@@ -910,8 +910,122 @@ async function strategy() {
 }
 
 
+// ---------- Market-Maker: v2 variants (default) | v1 archive ----------
+const mmTabs = (sub) => `
+  <div class="row" style="gap:8px;margin:6px 0 14px">
+    <button class="btn ${sub === "variants" ? "" : "ghost"}" data-mmsub="variants">${t("mmv.tab")}</button>
+    <button class="btn ${sub === "v1" ? "" : "ghost"}" data-mmsub="v1">${t("mmv.tabV1")}</button>
+  </div>`;
+const wireMmTabs = () =>
+  main.querySelectorAll("[data-mmsub]").forEach((b) =>
+    b.addEventListener("click", () => {
+      state.mmSub = b.dataset.mmsub;
+      for (const x of state.timers) clearTimeout(x);
+      state.timers = [];
+      mmScreen();
+    }),
+  );
+
+// a small equity line: [[t, v], …] → SVG
+function sparkline(points, start) {
+  const w = 150;
+  const h = 36;
+  const ys = [start, ...points.map((p) => p[1])];
+  if (ys.length < 2) return `<span class="small muted">–</span>`;
+  const lo = Math.min(...ys);
+  const hi = Math.max(...ys);
+  const span = hi - lo || 1;
+  const xy = ys.map((y, i) => `${((i / (ys.length - 1)) * w).toFixed(1)},${(h - ((y - lo) / span) * h).toFixed(1)}`).join(" ");
+  const base = (h - ((start - lo) / span) * h).toFixed(1);
+  const up = ys.at(-1) >= start;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="equity"><line x1="0" x2="${w}" y1="${base}" y2="${base}" stroke="currentColor" stroke-opacity=".25" stroke-dasharray="3 3"/><polyline fill="none" stroke="${up ? "#16a34a" : "#dc2626"}" stroke-width="1.5" points="${xy}"/></svg>`;
+}
+
+async function mmVariantsScreen() {
+  main.innerHTML = `<p class="kicker">${t("mm.kicker")}</p>${mmTabs("variants")}<div id="mmv-root"><p class="hand">${t("strategy.loading")}</p></div>`;
+  wireMmTabs();
+  const money = (v) => (Number.isFinite(v) ? `${v < 0 ? "−" : v > 0 ? "+" : ""}$${Math.abs(v).toFixed(2)}` : "–");
+  const cc = (v) => (Number.isFinite(v) ? `${(100 * v).toFixed(2)}¢` : "–");
+  const num = (v, suf = "") => (Number.isFinite(v) ? `${v}${suf}` : "–");
+  const up = (s) => (s ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` : "–");
+  const draw = async () => {
+    if (state.tab !== "mm" || (state.mmSub || "variants") !== "variants") return;
+    const root = $("#mmv-root");
+    if (!root) return;
+    let s;
+    try {
+      s = await api("/api/mm/variants");
+    } catch (e) {
+      root.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+      return later(draw, 5000);
+    }
+    const f = s.feed || {};
+    const anyRunning = s.variants.some((v) => v.running);
+    const src = (x) => ["cross_eq", "cross_through", "trade_at_level", "trade_through"].map((k) => x[k] || 0).join(" / ");
+    root.innerHTML = `
+      <h1>${t("mmv.h1")}</h1>
+      <p class="sub">${t("mmv.sub", { n: s.minCycles })}</p>
+      <div class="row" style="gap:10px;margin:14px 0;flex-wrap:wrap">
+        <button class="btn" id="mmv-start" ${anyRunning && s.variants.every((v) => v.running) ? "disabled" : ""}>${t("mmv.startAll")}</button>
+        <button class="btn ghost" id="mmv-stop" ${anyRunning ? "" : "disabled"}>${t("mmv.stopAll")}</button>
+        <button class="btn ghost" id="mmv-reset" style="color:#ef4444;border-color:rgba(239,68,68,0.4)">${t("mmv.reset")}</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><b>${f.enabled ? f.connections?.filter((c) => c.healthy).length + "/" + f.connections?.length : "–"}</b><span>${t("mmv.feed.conns")}</span></div>
+        <div class="stat"><b>${num(f.msgPerSec)}</b><span>${t("mmv.feed.msgs")}</span></div>
+        <div class="stat"><b>${num(f.staleTokens?.length)}</b><span>${t("mmv.feed.stale")}</span></div>
+        <div class="stat"><b>${num(f.reconnects)}</b><span>${t("mmv.feed.reconnects")}</span></div>
+        <div class="stat"><b>${num(f.process?.cpuPct, "%")}</b><span>CPU</span></div>
+        <div class="stat"><b>${num(f.process?.eventLoopLagMs?.p99, " ms")}</b><span>${t("mmv.feed.lag")}</span></div>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th class="l">${t("mmv.th.variant")}</th><th>${t("mmv.th.cycles")}</th><th>${t("mmv.th.net")}</th><th>${t("mmv.th.ev")}</th>
+          <th>${t("mmv.th.scratch")}</th><th>${t("mmv.th.markout")}</th><th>${t("mmv.th.dd")}</th>
+          <th title="cross_eq / cross_through / trade_at_level / trade_through">${t("mmv.th.sources")}</th><th>${t("mmv.th.uptime")}</th><th class="l">${t("mmv.th.equity")}</th>
+        </tr></thead>
+        <tbody>${s.variants
+          .map((v) => {
+            const st = v.stats;
+            return `<tr>
+              <td class="l"><b>${esc(v.id)}</b> ${v.running ? `<span class="pill blue">●</span>` : `<span class="pill grey">○</span>`}<br><span class="small muted">${esc(v.label)}</span>
+                ${v.enoughData ? "" : `<br><span class="pill grey" style="font-size:11px">${t("mmv.notEnough", { n: st.cycles, min: s.minCycles })}</span>`}</td>
+              <td>${st.cycles}</td>
+              <td>${money(st.netPnl)}</td>
+              <td>${money(st.evPerCycle)}</td>
+              <td>${num(st.scratchPct, "%")}</td>
+              <td>${cc(st.markout5)} / ${cc(st.markout30)}</td>
+              <td>${num(st.maxDrawdownPct, "%")}</td>
+              <td class="small">${src(st.fillSources || {})}</td>
+              <td>${up(v.uptimeSec)}</td>
+              <td class="l">${sparkline(v.equity, v.config.startBalance)}</td>
+            </tr>`;
+          })
+          .join("")}</tbody>
+      </table></div>
+      <p class="foot">${t("mmv.foot")}</p>`;
+    $("#mmv-start")?.addEventListener("click", async () => {
+      await api("/api/mm/variants/start", {}).catch((e) => alert(e.message));
+      draw();
+    });
+    $("#mmv-stop")?.addEventListener("click", async () => {
+      await api("/api/mm/variants/stop", {}).catch((e) => alert(e.message));
+      draw();
+    });
+    $("#mmv-reset")?.addEventListener("click", async () => {
+      if (!confirm(t("mmv.resetConfirm"))) return;
+      await api("/api/mm/variants/reset", { confirm: "RESET" }).catch((e) => alert(e.message));
+      draw();
+    });
+    later(draw, 5000);
+  };
+  draw();
+}
+
 async function mmScreen() {
-  main.innerHTML = `<p class="kicker">${t("mm.kicker")}</p><div id="mm-root"><p class="hand">${t("strategy.loading")}</p></div>`;
+  if ((state.mmSub || "variants") === "variants") return mmVariantsScreen();
+  main.innerHTML = `<p class="kicker">${t("mm.kicker")}</p>${mmTabs("v1")}<div id="mm-root"><p class="hand">${t("strategy.loading")}</p></div>`;
+  wireMmTabs();
 
   const usdExact = (v) =>
     Number.isFinite(v)
@@ -942,6 +1056,7 @@ async function mmScreen() {
     if (!root) return;
 
     root.innerHTML = `
+      <p class="pill" style="background:#ef4444;color:#fff;display:inline-block;margin-bottom:8px">v1 · ${t("mm.v1Invalid")}</p>
       <h1>${t("mm.h1")}</h1>
       <p class="sub">${t("mm.sub")}</p>
 
