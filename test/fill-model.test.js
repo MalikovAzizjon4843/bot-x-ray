@@ -232,6 +232,30 @@ test("M9. reported side disagrees with the book → the level that went down dec
   assert.equal(z.fm.stats.sideOverridden, 0);
 });
 
+// A cancel shows up twice: YES ask P and its mirror NO bid 1−P, at the same moment.
+function mirroredCancel(cancelMode) {
+  const s = setup({ cancelMode, queue: 100 });
+  s.at(500);
+  s.level("ask", 0.52, 200); // 100 join behind us (mirrored too)
+  s.at(1000);
+  const before = s.fm.stats.cancelsQty;
+  s.level("ask", 0.52, 150); // cancel 50: one event on YES ask 0.52, one on NO bid 0.48
+  s.at(1400);
+  return { s, cancels: s.fm.stats.cancelsQty - before };
+}
+
+test("M10. proportional: a cancel on YES ask P and NO bid 1−P at once lowers queueAhead once", () => {
+  const { s, cancels } = mirroredCancel("proportional");
+  assert.equal(s.order.queueAhead, 75, "100 − 50 × 100/200, once (twice would be 50)");
+  assert.equal(cancels, 50);
+});
+
+test("M11. pessimistic: the same mirrored cancel leaves queueAhead alone, cancelsQty = 50", () => {
+  const { s, cancels } = mirroredCancel("pessimistic");
+  assert.equal(s.order.queueAhead, 100);
+  assert.equal(cancels, 50);
+});
+
 test("look-alike YES/NO trades with different transaction hashes are two matches", () => {
   const s = setup({ queue: 0 });
   s.at(500);
@@ -287,7 +311,7 @@ test("a resync decrease is a cancel, never a fill, even with a trade nearby", ()
   s.trade(Y, 0.52, 0.0001, "BUY"); // a trade at our level can't turn a resync decrease into a fill
   s.at(1000);
   assert.equal(filled(s.fills), 0);
-  assert.equal(s.fm.stats.cancelsQty, 120, "60 on YES and its mirror on NO");
+  assert.equal(s.fm.stats.cancelsQty, 60, "60 on YES and its mirror on NO are one cancel");
   assert.equal(s.order.queueAhead, 40);
 });
 
