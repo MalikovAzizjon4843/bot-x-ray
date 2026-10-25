@@ -123,7 +123,8 @@ Fayllar: `lib/clob-ws.js` (ClobFeed, FeedPool, RawLog), `lib/market-rotator.js`,
 - Stats: net PnL, EV/sikl (fillSource bo'yicha ham), scratch %, markout 5s/30s, jami taker fee, max DD, fill rate, o'rtacha time-to-fill.
 - Qabul: engine testlari + 10 min jonli smoke-test (xato yo'q, sikllar yoziladi).
 - Amalga oshirish izohlari (2026-10-25):
-  - Kitoblar mirrored bo'lgani uchun `askUp + askDown = 1 + spread ≥ 1` → Strategiya A faqat mirror buzilgan lahzada mumkin; counter odatda 0.
+  - Kitoblar mirrored bo'lgani uchun `askUp + askDown = 1 + spread ≥ 1` → Strategiya A faqat mirror buzilgan lahzada mumkin; counter odatda 0. **Qaror (2026-10-25): A engine'da o'chiq (`strategies.A: false`), imkoniyatlar counter'i qoladi.**
+  - `crossFill`: `all` | `through_only` | `off` (default `all`). Cross ikkiga bo'linadi: `cross_eq` (bestBid = bizning ask) va `cross_through` (bestBid > bizning ask). Har cross fill'da diagnostika: o'z va mirror BBO, lokal kitob kesishganmi, ±1s ichida bizning narxda trade, oxirgi resync/heal'dan beri ms.
   - Shu sababdan B: `pairSum = 1 + spread − 2·tick` (tick 1¢ da) → 1.02 uchun spread ≥ 4¢ kerak.
   - Qo'shimcha config: `quoteTtlSec` 180 (fill yo'q → clean merge), `legTtlSec` 180 (bitta oyoq → exit), `exitTtlSec` 60 (passive_exit → keyin scratch), `minTimeLeftSec` 240, `repegMinMs` 2000, `takerDelayMs` 250.
   - Qisman fill: ikkala oyoqdagi to'lmagan juftlar $1 ga merge, qolgan bitta oyoq exitMode bo'yicha. Bozor tugasa — qolgan hajm natijaga (Gamma winner) qadar ushlanadi.

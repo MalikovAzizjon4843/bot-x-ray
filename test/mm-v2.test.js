@@ -261,6 +261,21 @@ test("strategy A: edge after fees on both asks, executed on the book 250 ms late
   assert.equal(w.mm.s.counters.aOpportunities, 1, "the same edge isn't counted twice");
 });
 
+test("strategy A is off by default (mirrored books), but its opportunities are still counted", () => {
+  const w = world({ config: { strategies: { B: false } } });
+  assert.equal(w.mm.config.strategies.A, false);
+  w.set(UP, "ask", 0.45, 100);
+  w.set(UP, "bid", 0.44, 100);
+  w.set(DOWN, "ask", 0.5, 100);
+  w.set(DOWN, "bid", 0.49, 100);
+  w.mm.start();
+  w.at(0);
+  w.at(1_000);
+  assert.equal(w.mm.s.counters.aOpportunities, 1);
+  assert.equal(w.mm.s.counters.aExecuted, 0);
+  assert.equal(open(w).length, 0);
+});
+
 test("a stale token → no new quote; no fee data → skipped and counted", () => {
   const s = world({ stale: true });
   s.level("bid", 0.47, 200);
