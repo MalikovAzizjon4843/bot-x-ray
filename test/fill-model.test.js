@@ -33,7 +33,7 @@ function setup({ cancelMode = "pessimistic", crossFill = true, queue = 100, P = 
   level("bid", 0.5, 50);
   if (queue) level("ask", P, queue);
   level("ask", 0.55, 80);
-  const trade = (assetId, price, size, side, dts = 0) => fm.onTrade({ assetId, price, size, side, ts: 1_000_000 + t + dts, recvTs: t });
+  const trade = (assetId, price, size, side, dts = 0, txHash) => fm.onTrade({ assetId, price, size, side, ts: 1_000_000 + t + dts, recvTs: t, txHash });
   const at = (ms) => {
     t = ms;
     fm.tick(t);
@@ -186,15 +186,25 @@ test("M6. queue 0, NO SELL 10 @ 1−P → our YES ask P fills 10", () => {
 test("M7. one match as YES BUY 10 @ P and NO SELL 10 @ 1−P, 20 ms apart → fill 10, not 20", () => {
   const s = setup({ queue: 0 });
   s.at(500);
-  s.trade(Y, 0.52, 10, "BUY");
+  s.trade(Y, 0.52, 10, "BUY", 0, "0xmatch");
   s.at(520);
-  s.trade(N, 0.48, 10, "SELL", 0);
+  s.trade(N, 0.48, 10, "SELL", 0, "0xmatch");
   assert.equal(filled(s.fills), 10);
   assert.equal(s.fm.stats.duplicates, 1);
   // two real matches of the same size on the same token are not merged
   s.at(530);
-  s.trade(Y, 0.52, 10, "BUY");
+  s.trade(Y, 0.52, 10, "BUY", 0, "0xnext");
   assert.equal(filled(s.fills), 20);
+});
+
+test("look-alike YES/NO trades with different transaction hashes are two matches", () => {
+  const s = setup({ queue: 0 });
+  s.at(500);
+  s.trade(Y, 0.52, 10, "BUY", 0, "0xa");
+  s.at(520);
+  s.trade(N, 0.48, 10, "SELL", 0, "0xb");
+  assert.equal(filled(s.fills), 20);
+  assert.equal(s.fm.stats.duplicates, 0);
 });
 
 test("BUY orders are symmetric: NO BUY at 1−P is a YES SELL at P", () => {

@@ -87,7 +87,11 @@ Fayllar: `lib/clob-ws.js` (ClobFeed, FeedPool, RawLog), `lib/market-rotator.js`,
 - `cancelMode`: `pessimistic` (default, queueAhead o'zgarmaydi) | `proportional`.
 - `source:"resync"` kamayishi (shadow resync / jim yo'qolish) — HECH QACHON fill emas: buffer'ga tushadi, trade bilan match bo'lmaydi → cancel → `cancelMode`.
 - Mirrored kitob → `queueAhead` faqat o'z token kitobidan (complement bid'lar unda allaqachon bor, qo'shilmaydi).
-- Ochiq savol: bizning YES ask P darajamizni iste'mol qilgan trade NO token'da 1−P narxda kelishi mumkin (side istisnolari). Trade matching'da complement token trade'larini ham hisobga olish kerakmi — Etap 2 boshida o'lchab hal qilinadi.
+- Unified trade stream (o'lchov 2026-10-25, 10 min, 4241 trade): bitta match 99.9% holatda FAQAT bitta tokenda chiqadi; strict kalit (|Δts| ≤ 50ms, size teng, P ↔ 1−P, side qarama-qarshi) bilan atigi 2 juft, ikkalasining `txHash`'i har xil. Shuning uchun:
+  - SELL YES @ P uchun trade'lar = YES {BUY, ≥P} ∪ NO {SELL, ≤1−P} (YES ekvivalentiga o'giriladi); BUY simmetrik.
+  - Dedup: yuqoridagi kalit + `txHash` bir xil (yoki yo'q). Har xil `txHash` → ikkita alohida match.
+  - Majburiy testlar: M6 (queue 0, NO SELL 10 @ 1−P → fill 10), M7 (bitta match YES va NO'da 20ms farq bilan → fill 10).
+- Ma'lum cheklov: ~5% trade'da `side` kitobdagi kamayishga zid (mint/merge, cross-token). Ular yuqoridagi to'plamga tushmasa, bizning darajamiz navbati ilgarilamaydi → fill soni kam baholanadi. Etap 6 replay'da ta'siri o'lchanadi.
 - `crossFill` default TRUE. Sabab: cross = bestBid ≥ bizning ask = narx bizdan o'tgan = har doim adverse fill. `false` zararli fill'larni tashlab PnL ni optimistik qiladi.
 - Yordamchilar: `takerFee(shares, p, fd)`, `roundToTick` (SELL yuqoriga), `sharesForUsd` (min 5 share), `sweep` (kitob bo'ylab VWAP), `MarkoutTracker` (5s, 30s; SELL markout = fillPrice − midLater).
 - Majburiy testlar:
