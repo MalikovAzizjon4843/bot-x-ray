@@ -465,3 +465,6 @@ ol.rules li, ul.rules li { margin: 0 0 8px; }
   line-height: 1.6;
 }
 
+
+/* MM variants table scrolls sideways on narrow screens */
+.table-wrap { overflow-x: auto; }
