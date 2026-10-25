@@ -1,0 +1,265 @@
+// Fill model: queue position, the double-count rule, cancels, unified YES/NO trades. No network.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { OrderBook } from "../lib/clob-ws.js";
+import { FillModel, takerFee, roundToTick, sharesForUsd, sweep, MarkoutTracker } from "../lib/fill-model.js";
+
+const Y = "1000"; // YES (lower id)
+const N = "2000"; // NO
+const FD = { r: 0.07, e: 1, to: true };
+
+// A YES book with our level, its mirror on NO, and a fill model on top. Clock in ms, starting at 0.
+function setup({ cancelMode = "pessimistic", crossFill = true, queue = 100, P = 0.52 } = {}) {
+  let t = 0;
+  const books = { [Y]: new OrderBook(Y), [N]: new OrderBook(N) };
+  const fm = new FillModel({ book: (id) => books[id], complementOf: (id) => (id === Y ? N : id === N ? Y : null), cancelMode, crossFill, now: () => t });
+  const fills = [];
+  fm.on("fill", (f) => fills.push(f));
+  const set = (id, side, price, size) => {
+    const m = side === "bid" ? books[id].bids : books[id].asks;
+    const prev = m.get(price) || 0;
+    size > 0 ? m.set(price, size) : m.delete(price);
+    return prev;
+  };
+  // a level change on a token, mirrored on the other one, as the feed would report it
+  const level = (side, price, size, source = "price_change") => {
+    const prevY = set(Y, side, price, size);
+    const mside = side === "ask" ? "bid" : "ask";
+    const mp = Math.round((1 - price) * 100) / 100;
+    const prevN = set(N, mside, mp, size);
+    fm.onLevel({ assetId: Y, side, price, newSize: size, prevSize: prevY, recvTs: t, source });
+    fm.onLevel({ assetId: N, side: mside, price: mp, newSize: size, prevSize: prevN, recvTs: t, source });
+  };
+  level("bid", 0.5, 50);
+  if (queue) level("ask", P, queue);
+  level("ask", 0.55, 80);
+  const trade = (assetId, price, size, side, dts = 0) => fm.onTrade({ assetId, price, size, side, ts: 1_000_000 + t + dts, recvTs: t });
+  const at = (ms) => {
+    t = ms;
+    fm.tick(t);
+  };
+  const order = fm.place({ id: "o1", assetId: Y, side: "SELL", price: P, size: 30, placedAt: 0 });
+  at(400); // active, queue taken from the level
+  return { fm, books, fills, level, trade, at, order, get t() { return t; } };
+}
+
+const filled = (fills) => Math.round(fills.reduce((a, f) => a + f.qty, 0) * 1e6) / 1e6;
+
+test("1. queue 100, trade 60 at our level → fill 0, queueAhead 40", () => {
+  const s = setup();
+  assert.equal(s.order.status, "active");
+  assert.equal(s.order.queueAheadAtPlace, 100);
+  s.at(500);
+  s.trade(Y, 0.52, 60, "BUY");
+  assert.equal(filled(s.fills), 0);
+  assert.equal(s.order.queueAhead, 40);
+});
+
+test("2. then a trade of 70 → fill 30", () => {
+  const s = setup();
+  s.at(500);
+  s.trade(Y, 0.52, 60, "BUY");
+  s.at(600);
+  s.trade(Y, 0.52, 70, "BUY");
+  assert.equal(filled(s.fills), 30);
+  assert.equal(s.fills[0].source, "trade_at_level");
+  assert.equal(s.order.status, "filled");
+});
+
+test("3. cancel 50: pessimistic keeps queueAhead, proportional lowers it", () => {
+  for (const [mode, want] of [["pessimistic", 100], ["proportional", 75]]) {
+    const s = setup({ cancelMode: mode, queue: 100 });
+    s.at(500);
+    s.level("ask", 0.52, 200); // 100 more join behind us
+    s.at(600);
+    s.level("ask", 0.52, 150); // 50 cancelled somewhere in the level
+    s.at(1000);
+    // proportional: the cancel is spread over the level, our share ahead is 100/200 → 100 − 50 × ½
+    assert.equal(s.order.queueAhead, want, mode);
+  }
+});
+
+test("4. trade-through → filled at once", () => {
+  const s = setup();
+  s.at(500);
+  s.trade(Y, 0.53, 5, "BUY");
+  assert.equal(filled(s.fills), 30);
+  assert.equal(s.fills[0].source, "trade_through");
+  assert.equal(s.fills[0].price, 0.52, "a maker fills at its own price");
+});
+
+test("5. a trade inside the latency window is ignored", () => {
+  const s = setup();
+  const o2 = s.fm.place({ id: "o2", assetId: Y, side: "SELL", price: 0.52, size: 10, placedAt: 500 });
+  s.at(600);
+  s.trade(Y, 0.53, 50, "BUY"); // o2 isn't in the queue yet
+  assert.equal(o2.status, "pending");
+  assert.equal(o2.filled, 0);
+  s.at(900);
+  assert.equal(o2.status, "active");
+});
+
+test("6. a level decrease with no trade → no fill", () => {
+  const s = setup();
+  s.at(500);
+  s.level("ask", 0.52, 10);
+  s.at(1000);
+  assert.equal(filled(s.fills), 0);
+});
+
+test("7. takerFee: p=0.5 → 0.0175 a share; p=0.9 → 0.0063", () => {
+  assert.equal(+takerFee(1, 0.5, FD).toFixed(6), 0.0175);
+  assert.equal(+takerFee(1, 0.9, FD).toFixed(6), 0.0063);
+  assert.equal(+takerFee(20, 0.5, FD).toFixed(6), 0.35);
+  assert.throws(() => takerFee(1, 0.5, null), /fee data/);
+});
+
+test("M1. level 100→40 (t=0), trade 60 (t=+50ms) → fill 0, queueAhead 40", () => {
+  const s = setup();
+  s.at(500);
+  s.level("ask", 0.52, 40);
+  s.at(550);
+  s.trade(Y, 0.52, 60, "BUY");
+  s.at(1000);
+  assert.equal(filled(s.fills), 0);
+  assert.equal(s.order.queueAhead, 40);
+});
+
+test("M2. same, trade 130 → fill 30", () => {
+  const s = setup();
+  s.at(500);
+  s.level("ask", 0.52, 40);
+  s.at(550);
+  s.trade(Y, 0.52, 130, "BUY");
+  assert.equal(filled(s.fills), 30);
+});
+
+test("M3. level 100→40, 400 ms without a trade → cancel 60", () => {
+  const p = setup({ cancelMode: "pessimistic" });
+  p.at(500);
+  p.level("ask", 0.52, 40);
+  p.at(700);
+  assert.equal(p.order.queueAhead, 100, "still inside the match window");
+  p.at(900);
+  assert.equal(p.order.queueAhead, 40, "pessimistic: unchanged, then clamped to the level");
+  const q = setup({ cancelMode: "proportional", queue: 100 });
+  q.at(500);
+  q.level("ask", 0.52, 40);
+  q.at(900);
+  assert.equal(q.order.queueAhead, 40, "proportional: 100 − 60 × 100/100");
+  assert.equal(filled(p.fills) + filled(q.fills), 0);
+});
+
+test("M4. trade first, level after (+80 ms) → same as M1", () => {
+  const s = setup();
+  s.at(500);
+  s.trade(Y, 0.52, 60, "BUY");
+  s.at(580);
+  s.level("ask", 0.52, 40);
+  s.at(1000);
+  assert.equal(filled(s.fills), 0);
+  assert.equal(s.order.queueAhead, 40);
+  assert.equal(s.fm.stats.cancelsQty, 0, "the decrease was the trade, not a cancel");
+});
+
+test("M5. bbo_heal sweep + trade-through → filled once, not twice", () => {
+  const s = setup();
+  s.at(500);
+  s.trade(Y, 0.52, 100, "BUY");
+  s.trade(Y, 0.55, 80, "BUY");
+  s.level("ask", 0.52, 0, "bbo_heal");
+  s.level("ask", 0.55, 0, "bbo_heal");
+  s.at(1000);
+  assert.equal(filled(s.fills), 30);
+  assert.equal(s.order.status, "filled");
+});
+
+test("M6. queue 0, NO SELL 10 @ 1−P → our YES ask P fills 10", () => {
+  const s = setup({ queue: 0 });
+  assert.equal(s.order.queueAheadAtPlace, 0);
+  s.at(500);
+  s.trade(N, 0.48, 10, "SELL");
+  assert.equal(filled(s.fills), 10);
+  assert.equal(s.fills[0].source, "trade_at_level");
+});
+
+test("M7. one match as YES BUY 10 @ P and NO SELL 10 @ 1−P, 20 ms apart → fill 10, not 20", () => {
+  const s = setup({ queue: 0 });
+  s.at(500);
+  s.trade(Y, 0.52, 10, "BUY");
+  s.at(520);
+  s.trade(N, 0.48, 10, "SELL", 0);
+  assert.equal(filled(s.fills), 10);
+  assert.equal(s.fm.stats.duplicates, 1);
+  // two real matches of the same size on the same token are not merged
+  s.at(530);
+  s.trade(Y, 0.52, 10, "BUY");
+  assert.equal(filled(s.fills), 20);
+});
+
+test("BUY orders are symmetric: NO BUY at 1−P is a YES SELL at P", () => {
+  const s = setup();
+  const b = s.fm.place({ id: "b1", assetId: Y, side: "BUY", price: 0.5, size: 20, placedAt: 500 });
+  s.at(900);
+  assert.equal(b.queueAheadAtPlace, 50);
+  s.trade(N, 0.5, 60, "BUY"); // NO BUY at 0.50 = YES SELL at 0.50
+  assert.equal(b.filled, 10);
+  s.at(950);
+  s.trade(Y, 0.49, 1, "SELL"); // through our bid
+  assert.equal(b.filled, 20);
+  assert.equal(b.fills.at(-1).source, "trade_through");
+});
+
+test("cross: the bid reaches our ask → filled (crossFill true), nothing with crossFill false", () => {
+  for (const crossFill of [true, false]) {
+    const s = setup({ crossFill });
+    s.at(500);
+    s.level("bid", 0.52, 30);
+    assert.equal(filled(s.fills), crossFill ? 30 : 0);
+    if (crossFill) assert.equal(s.fills[0].source, "cross");
+  }
+});
+
+test("post-only: an order that would cross when it becomes active is rejected", () => {
+  const s = setup();
+  const o = s.fm.place({ id: "x", assetId: Y, side: "SELL", price: 0.5, size: 10, placedAt: 500 });
+  s.at(900);
+  assert.equal(o.status, "rejected");
+});
+
+test("a better price nobody quotes → queueAhead 0", () => {
+  const s = setup();
+  const o = s.fm.place({ id: "x", assetId: Y, side: "SELL", price: 0.51, size: 10, placedAt: 500 });
+  s.at(900);
+  assert.equal(o.queueAheadAtPlace, 0);
+});
+
+test("a resync decrease is a cancel, never a fill, even with a trade nearby", () => {
+  const s = setup({ queue: 100 });
+  s.at(500);
+  s.level("ask", 0.52, 40, "resync");
+  s.at(550);
+  s.trade(Y, 0.52, 0.0001, "BUY"); // a trade at our level can't turn a resync decrease into a fill
+  s.at(1000);
+  assert.equal(filled(s.fills), 0);
+  assert.equal(s.fm.stats.cancelsQty, 60);
+  assert.equal(s.order.queueAhead, 40);
+});
+
+test("helpers: roundToTick, sharesForUsd, sweep, markouts", () => {
+  assert.equal(roundToTick(0.5049, 0.01, "SELL"), 0.51);
+  assert.equal(roundToTick(0.5049, 0.01, "BUY"), 0.5);
+  assert.equal(roundToTick(0.52, 0.01, "SELL"), 0.52);
+  assert.equal(roundToTick(0.9612, 0.001, "SELL"), 0.962);
+  assert.equal(sharesForUsd(10, 0.52), 19.23);
+  assert.equal(sharesForUsd(1, 0.52), 5);
+  const sw = sweep(new Map([[0.52, 10], [0.53, 20], [0.6, 100]]), 25, "BUY");
+  assert.deepEqual(sw.levels, [[0.52, 10], [0.53, 15]]);
+  assert.equal(+sw.avgPrice.toFixed(4), +((0.52 * 10 + 0.53 * 15) / 25).toFixed(4));
+  const mk = new MarkoutTracker();
+  mk.track({ id: "f", assetId: Y, side: "SELL", price: 0.52, at: 0 });
+  assert.equal(mk.tick(5_000, () => 0.5).length, 0);
+  const done = mk.tick(30_000, () => 0.55);
+  assert.equal(+done[0].marks[5000].toFixed(4), 0.02);
+  assert.equal(+done[0].marks[30000].toFixed(4), -0.03);
+});
