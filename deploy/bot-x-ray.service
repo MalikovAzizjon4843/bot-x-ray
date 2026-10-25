@@ -1,0 +1,33 @@
+# Bot X-Ray (paper market-maker + feed recorder). Installed by deploy/setup.sh.
+# Listens on 127.0.0.1 only: open it through an SSH tunnel (deploy/README.md). No public port, no nginx.
+[Unit]
+Description=Bot X-Ray (paper only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xray
+Group=xray
+WorkingDirectory=/home/xray/bot-x-ray
+ExecStart=/home/xray/bin/node server.js
+Environment=HOST=127.0.0.1
+Environment=PORT=3797
+Environment=BOTXRAY_RAWLOG_MAX_GB=10
+Environment=NODE_ENV=production
+# SIGTERM → /api/shutdown path: raw log flushed, engines saved, lock released
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=always
+RestartSec=5
+# stay out of the way of everything else on the box
+Nice=10
+MemoryMax=768M
+CPUQuota=100%
+IOWeight=50
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
