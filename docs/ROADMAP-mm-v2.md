@@ -122,6 +122,15 @@ Fayllar: `lib/clob-ws.js` (ClobFeed, FeedPool, RawLog), `lib/market-rotator.js`,
 - State: `data/mm-paper-v2.json`. Sikllar: `data/mm-cycles-v2.jsonl` — strategiya, bozor, har oyoq fillSource, queueAheadAtPlace, time-to-fill, fees, scratch, markout5/30, net PnL, cancelMode, crossFill, exitMode.
 - Stats: net PnL, EV/sikl (fillSource bo'yicha ham), scratch %, markout 5s/30s, jami taker fee, max DD, fill rate, o'rtacha time-to-fill.
 - Qabul: engine testlari + 10 min jonli smoke-test (xato yo'q, sikllar yoziladi).
+- Amalga oshirish izohlari (2026-10-25):
+  - Kitoblar mirrored bo'lgani uchun `askUp + askDown = 1 + spread ≥ 1` → Strategiya A faqat mirror buzilgan lahzada mumkin; counter odatda 0.
+  - Shu sababdan B: `pairSum = 1 + spread − 2·tick` (tick 1¢ da) → 1.02 uchun spread ≥ 4¢ kerak.
+  - Qo'shimcha config: `quoteTtlSec` 180 (fill yo'q → clean merge), `legTtlSec` 180 (bitta oyoq → exit), `exitTtlSec` 60 (passive_exit → keyin scratch), `minTimeLeftSec` 240, `repegMinMs` 2000, `takerDelayMs` 250.
+  - Qisman fill: ikkala oyoqdagi to'lmagan juftlar $1 ga merge, qolgan bitta oyoq exitMode bo'yicha. Bozor tugasa — qolgan hajm natijaga (Gamma winner) qadar ushlanadi.
+  - Restart: ochiq sikllar `restart` sababi bilan yopiladi (merge + qolgan oyoq natijaga).
+  - Engine flag: `BOTXRAY_MM_ENGINE=v1|v2` (default v2). API: `/api/mm/v2/{status,cycles,start,stop,reset,config}`; reset `{"confirm":"RESET"}` bilan, config faqat to'xtagan holatda.
+  - Engine fill'larni faqat `FillModel` dan oladi (unified trade stream + effective side); har sikl yozuvida `sideOverridden`.
+  - `/api/mm/feed-health`: `process.eventLoopLagMs` (p50/p99/max), `process.cpuPct`, `rssMB`, `fillModel` (buffer, eventUs p50/p99).
 
 ## Etap 4 — Run Monitor UI (`#/mm` ichida yangi tab)
 - `/api/mm/v2/stream` (SSE): sikl, fill, scratch, equity push.
