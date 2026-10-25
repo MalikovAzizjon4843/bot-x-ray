@@ -107,7 +107,9 @@ test("both legs fill → net = shares × (sum − 1), written with fill sources 
   assert.equal(c.scratch, false);
   assert.equal(c.sideOverridden, false);
   assert.equal(c.cancelMode, "pessimistic");
-  assert.equal(c.crossFill, true);
+  assert.equal(c.crossFill, "all");
+  assert.deepEqual(c.fills.map((f) => [f.leg, f.source, f.m5]), [[0, "trade_at_level", 0.015], [1, "trade_at_level", 0.015]]);
+  assert.equal(c.firstFillSource, "trade_at_level");
   assert.equal(c.exitMode, "taker_scratch");
   assert.equal(w.mm.s.totals.netPnl, 0.3);
   assert.equal(w.mm.s.equity.at(-1).v, 50.3);

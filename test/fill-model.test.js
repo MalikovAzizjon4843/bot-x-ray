@@ -279,14 +279,41 @@ test("BUY orders are symmetric: NO BUY at 1−P is a YES SELL at P", () => {
   assert.equal(b.fills.at(-1).source, "trade_through");
 });
 
-test("cross: the bid reaches our ask → filled (crossFill true), nothing with crossFill false", () => {
-  for (const crossFill of [true, false]) {
+test("cross: bid = our ask is cross_eq, bid > our ask is cross_through; crossFill all | through_only | off", () => {
+  const run = (crossFill, bid) => {
     const s = setup({ crossFill });
     s.at(500);
-    s.level("bid", 0.52, 30);
-    assert.equal(filled(s.fills), crossFill ? 30 : 0);
-    if (crossFill) assert.equal(s.fills[0].source, "cross");
-  }
+    s.level("bid", bid, 30);
+    return s;
+  };
+  assert.equal(run("all", 0.52).fills[0].source, "cross_eq");
+  assert.equal(run("all", 0.53).fills[0].source, "cross_through");
+  assert.equal(filled(run("through_only", 0.52).fills), 0);
+  assert.equal(run("through_only", 0.53).fills[0].source, "cross_through");
+  assert.equal(filled(run("off", 0.53).fills), 0);
+  assert.equal(filled(run(true, 0.52).fills), 30, "true = all");
+  assert.equal(filled(run(false, 0.53).fills), 0, "false = off");
+});
+
+test("cross diagnostics: both BBOs, crossed local book, a trade at our price within ±1 s, time since heal", () => {
+  const s = setup();
+  s.at(500);
+  s.level("ask", 0.55, 0, "bbo_heal");
+  s.at(700);
+  s.trade(Y, 0.52, 1, "SELL"); // before the cross, at our price
+  s.at(900);
+  s.level("bid", 0.53, 30); // our ask 0.52 → cross_through
+  const d = s.fills[0].diag;
+  assert.equal(s.fills[0].source, "cross_through");
+  assert.deepEqual(d.ownBbo, { bid: 0.53, bidSize: 30, ask: 0.52, askSize: 100 });
+  assert.equal(d.crossedLocal, true, "bid 0.53 ≥ ask 0.52 on our own token");
+  assert.equal(d.mirrorBbo.ask, 0.47);
+  assert.equal(d.tradeBefore, true);
+  assert.equal(d.tradeAfter, false);
+  assert.equal(d.msSinceHeal, 400);
+  s.at(1500);
+  s.trade(Y, 0.52, 1, "BUY");
+  assert.equal(d.tradeAfter, true, "filled in later, on the same object");
 });
 
 test("post-only: an order that would cross when it becomes active is rejected", () => {
