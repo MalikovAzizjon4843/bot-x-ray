@@ -21,11 +21,13 @@ import * as mm from "./lib/market-maker.js";
 import * as mmFeed from "./lib/mm-feed.js";
 import * as lock from "./lib/instance-lock.js";
 import { MarketMakerV2 } from "./lib/mm-v2.js";
+import { Variants } from "./lib/mm-variants.js";
 import { endedWinner } from "./lib/polymarket.js";
 
 // Market-Maker engine: v2 (default) runs on the live feed; v1 is retired and only runs on request.
 const MM_ENGINE = process.env.BOTXRAY_MM_ENGINE === "v1" ? "v1" : "v2";
 let mm2 = null; // the v2 engine, once the feed is up
+let variants = null; // several v2 engines side by side (data/variants.json)
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, "public");
@@ -266,6 +268,20 @@ async function handle(req, res) {
 
     if (p === "/api/mm/feed-health") return send(res, 200, mmFeed.health());
 
+    // ── Market-Maker v2 variants (paper) ──
+    if (p.startsWith("/api/mm/variants")) {
+      if (!variants) throw httpError(503, "Variants need the v2 engine and the feed");
+      if (p === "/api/mm/variants") return send(res, 200, { ...variants.status(), feed: mmFeed.health() });
+      if (p === "/api/mm/variants/start" && post) return send(res, 200, variants.startAll());
+      if (p === "/api/mm/variants/stop" && post) return send(res, 200, variants.stopAll());
+      if (p === "/api/mm/variants/reset" && post) {
+        const b = await readBody(req);
+        if (b.confirm !== "RESET") throw httpError(400, 'Send {"confirm":"RESET"} to reset every variant');
+        return send(res, 200, variants.resetAll());
+      }
+      throw httpError(404, `No such endpoint: ${p}`);
+    }
+
     // ── Market-Maker v2 (paper) ──
     if (p.startsWith("/api/mm/v2/")) {
       if (!mm2) throw httpError(503, MM_ENGINE === "v1" ? "This server runs the v1 engine (BOTXRAY_MM_ENGINE=v1)" : "The feed is off (BOTXRAY_NO_FEED=1 or no WebSocket), so v2 can't run");
@@ -392,6 +408,7 @@ if (isMain) {
     server.closeAllConnections?.();
     try {
       mm2?.suspend();
+      variants?.suspendAll();
     } catch (e) {
       stamp(`mm-v2: couldn't save on shutdown (${e.message})`);
     }
@@ -412,6 +429,8 @@ if (isMain) {
     mmFeed.setEngineMetrics(() => mm2.fm?.metrics() || null);
     // it was running when the server stopped: carry on
     if (mm2.s.running) mm2.start();
+    variants = new Variants({ pool: feed.pool, markets: () => feed.rotator.markets(), dataDir: DATA, log: stamp, resolve: (slug) => endedWinner(slug) });
+    variants.resume();
   }
   console.log(
     `\n  Bot X-Ray ${VERSION} is running\n\n  Open:  ${url}\n  Stop:  Ctrl+C\n  Data:  ${DATA}\n`,
