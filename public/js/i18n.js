@@ -335,6 +335,7 @@ const S = {
   'claude.ex6':           { en: 'What is the paper strategy holding, and how has it done?', uz: 'Qog‘oz strategiya nimani ushlab turibdi va natijasi qanday bo‘ldi?' },
   // ── market-maker screen ──
   'mm.kicker':            { en: 'Market-Maker · CLOB Paper Trading', uz: 'Market-Meyker · CLOB Qog‘oz Savdo' },
+  'mm.v1Invalid':         { en: 'v1 results are invalid: its fill model counted cancels and any touch as fills, and added rebates to equity. Kept as an archive only; the v2 engine runs instead.', uz: "v1 natijalari yaroqsiz: uning fill modeli cancel va har qanday tegishni fill deb hisoblagan, rebate'ni equity'ga qo'shgan. Faqat arxiv sifatida saqlanadi; o'rniga v2 engine ishlaydi." },
   'mm.h1':                { en: 'Autonomous SPLIT / MERGE & Maker Rebate Simulator', uz: 'Avtonom SPLIT / MERGE va Maker Keshbek Simulyatori' },
   'mm.sub':               { en: 'Autonomous market-making engine operating on live Polymarket CLOB orderbooks. Simulates instant Buy-and-Merge arbitrage (payout .00) and Split-and-Sell maker spread capture with 0% maker fee, 0.15% rebate crediting, and emergency anti-legging protection.',
                              uz: 'Jonli Polymarket CLOB buyurtmalar kitobida ishlovchi avtonom market-meyker dvigateli. Bir zumda .00 lik Sotib olish va Birlashtirish (MERGE) arbitraji hamda 0% komissiya, 0.15% keshbek va yo‘qotishdan himoyalovchi Split-and-Sell spred savdosini simulyatsiya qiladi.' },

@@ -942,6 +942,7 @@ async function mmScreen() {
     if (!root) return;
 
     root.innerHTML = `
+      <p class="pill" style="background:#ef4444;color:#fff;display:inline-block;margin-bottom:8px">v1 · ${t("mm.v1Invalid")}</p>
       <h1>${t("mm.h1")}</h1>
       <p class="sub">${t("mm.sub")}</p>
 

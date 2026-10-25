@@ -20,6 +20,12 @@ import * as brokers from "./lib/brokers/index.js";
 import * as mm from "./lib/market-maker.js";
 import * as mmFeed from "./lib/mm-feed.js";
 import * as lock from "./lib/instance-lock.js";
+import { MarketMakerV2 } from "./lib/mm-v2.js";
+import { endedWinner } from "./lib/polymarket.js";
+
+// Market-Maker engine: v2 (default) runs on the live feed; v1 is retired and only runs on request.
+const MM_ENGINE = process.env.BOTXRAY_MM_ENGINE === "v1" ? "v1" : "v2";
+let mm2 = null; // the v2 engine, once the feed is up
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, "public");
@@ -260,8 +266,38 @@ async function handle(req, res) {
 
     if (p === "/api/mm/feed-health") return send(res, 200, mmFeed.health());
 
-    // ── Market-Maker paper-trading endpoints ──
-    if (p === "/api/mm/status") return send(res, 200, mm.state());
+    // ── Market-Maker v2 (paper) ──
+    if (p.startsWith("/api/mm/v2/")) {
+      if (!mm2) throw httpError(503, MM_ENGINE === "v1" ? "This server runs the v1 engine (BOTXRAY_MM_ENGINE=v1)" : "The feed is off (BOTXRAY_NO_FEED=1 or no WebSocket), so v2 can't run");
+      if (p === "/api/mm/v2/status") return send(res, 200, { ...mm2.status(), stats: mm2.stats(), equity: mm2.s.equity.slice(-500) });
+      if (p === "/api/mm/v2/cycles") return send(res, 200, mm2.readCycles(Math.min(Number(q("limit")) || 100, 1000)).reverse());
+      if (p === "/api/mm/v2/start" && post) return send(res, 200, mm2.start());
+      if (p === "/api/mm/v2/stop" && post) return send(res, 200, mm2.stop());
+      if (p === "/api/mm/v2/reset" && post) {
+        const b = await readBody(req);
+        if (b.confirm !== "RESET") throw httpError(400, 'Send {"confirm":"RESET"} to reset v2');
+        return send(res, 200, mm2.reset());
+      }
+      if (p === "/api/mm/v2/config" && post) {
+        const b = await readBody(req);
+        const cur = mm2.config;
+        const patch = {};
+        for (const [k, v] of Object.entries(b)) {
+          if (!(k in cur)) continue;
+          if (k === "strategies" && v && typeof v === "object") patch.strategies = { A: !!v.A, B: !!v.B };
+          else if (typeof v === typeof cur[k] && (typeof v !== "number" || Number.isFinite(v))) patch[k] = v;
+        }
+        try {
+          return send(res, 200, mm2.setConfig(patch));
+        } catch (e) {
+          throw httpError(e.status || 400, e.message);
+        }
+      }
+      throw httpError(404, `No such endpoint: ${p}`);
+    }
+
+    // ── Market-Maker v1 (retired: results invalid) ──
+    if (p === "/api/mm/status") return send(res, 200, { ...mm.state(), engine: "v1", invalid: true, activeEngine: MM_ENGINE });
     if (p === "/api/mm/toggle" && post) return send(res, 200, mm.toggle());
     if (p === "/api/mm/config" && post) {
       const b = await readBody(req);
@@ -354,6 +390,11 @@ if (isMain) {
     setTimeout(() => process.exit(0), 5000).unref();
     server.close();
     server.closeAllConnections?.();
+    try {
+      mm2?.suspend();
+    } catch (e) {
+      stamp(`mm-v2: couldn't save on shutdown (${e.message})`);
+    }
     await mmFeed.stop().catch(() => {});
     process.exit(0);
   };
@@ -363,9 +404,15 @@ if (isMain) {
       console.log(`  ${new Date().toISOString().slice(11, 19)} ${m}`),
     );
   // v1 Market-Maker is retired (its fill model was wrong); data/mm-paper.json stays as an archive.
-  // BOTXRAY_MM_V1=1 still runs the old loop.
-  if (process.env.BOTXRAY_MM_V1 === "1") mm.startLoop(stamp);
-  mmFeed.start({ log: stamp });
+  // BOTXRAY_MM_ENGINE=v1 still runs the old loop instead of v2.
+  if (MM_ENGINE === "v1") mm.startLoop(stamp);
+  const feed = mmFeed.start({ log: stamp });
+  if (feed && MM_ENGINE === "v2") {
+    mm2 = new MarketMakerV2({ pool: feed.pool, markets: () => feed.rotator.markets(), dataDir: DATA, log: stamp, resolve: (slug) => endedWinner(slug) });
+    mmFeed.setEngineMetrics(() => mm2.fm?.metrics() || null);
+    // it was running when the server stopped: carry on
+    if (mm2.s.running) mm2.start();
+  }
   console.log(
     `\n  Bot X-Ray ${VERSION} is running\n\n  Open:  ${url}\n  Stop:  Ctrl+C\n  Data:  ${DATA}\n`,
   );
